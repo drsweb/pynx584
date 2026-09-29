@@ -10,23 +10,20 @@ import stevedore.extension
 from nx584 import event_queue
 from nx584 import mail
 from nx584 import model
-
+from nx584.nx587 import NX587Protocol
+from nx584.nxcore import NXASCII
+from nx584.nxcore import NXBinary
+from nx584.nxcore import NXFrame
+from nx584.nxcore import NXProtocol
+from nx584.nxcore import ReadFailure
+from nx584.nxcore import ReadTimeout
+from nx584.nxcore import ConnectionLost
+from nx584.nx_protocol_adapter import NX584Adapter
+from nx584.nx_protocol_adapter import NX587Adapter
+from nx584.nxcore import fletcher
+from nx584.nxcore import make_ascii
 
 LOG = logging.getLogger('controller')
-
-
-def parse_ascii(data):
-    data_bytes = []
-    for i in range(0, len(data), 2):
-        data_bytes.append(int(data[i:i + 2], 16))
-    return data_bytes
-
-
-def make_ascii(data):
-    data_chars = []
-    for b in data:
-        data_chars.append('%02X' % b)
-    return ''.join(data_chars)
 
 
 def make_pin_buffer(digits):
@@ -39,240 +36,20 @@ def make_pin_buffer(digits):
     return pinbuf
 
 
-def fletcher(data, k=16):
-    if  k not in (16, 32, 64):
-        raise ValueError("Valid choices of k are 16, 32 and 64")
-    nbytes = k // 16
-    mod = 2 ** (8 * nbytes) - 1
-    s = s2 = 0
-    for t in data:
-        s += t
-        s2 += s
-    cksum = s % mod + (mod + 1) * (s2 % mod)
-    sum1 = cksum & 0xFF
-    sum2 = (cksum & 0xFF00) >> 8
-    return sum1, sum2
-
-
-class NXFrame(object):
-    def __init__(self):
-        self.length = 0
-        self.msgtype = 0
-        self.checksum = 0
-        self.data = []
-        self.ackreq = False
-
-    @property
-    def ack_required(self):
-        return self.ackreq
-
-    @staticmethod
-    def decode_line(line_bytes):
-        self = NXFrame()
-
-        s1, s2 = fletcher(line_bytes[:-2])
-        if [s1, s2] != line_bytes[-2:]:
-            raise ReadFailure('Checksum mismatch on received frame')
-
-        self.length = line_bytes[0]
-        msgtypefield = line_bytes[1]
-        self.checksum = (line_bytes[-2] << 8) & line_bytes[-1]
-        self.data = line_bytes[2:-2]
-        self.ackreq = bool(msgtypefield & 0x80)
-        self.msgtype = msgtypefield & 0x7F
-        return self
-
-    @property
-    def type_name(self):
-        return model.MSG_TYPES[self.msgtype]
-
-
-class ReadTimeout(Exception):
-    pass
-
-
-class ConnectionLost(Exception):
-    pass
-
-
-class ReadFailure(Exception):
-    pass
-
-
-class NXProtocol(object):
-    """Abstract the act of talking to the control panel."""
-    def __init__(self, stream):
-        self.stream = stream
-
-    def read(self, n):
-        """Read bytes from the stream.
-
-        Does the right thing for sockets and serial ports.
-
-        :raises: ReadTimeout if there is no data
-        :raises: ConnectionLost if something goes wrong
-        """
-        if hasattr(self.stream, 'read'):
-            r = self.stream.read(n)
-            if r == b'':
-                raise ReadTimeout()
-            return r
-        elif hasattr(self.stream, 'recv'):
-            try:
-                r = self.stream.recv(n)
-            except socket.timeout:
-                raise ReadTimeout()
-            except (socket.error, OSError):
-                raise ConnectionLost()
-            if r == b'':
-                raise ConnectionLost()
-            return r
-        else:
-            raise ConnectionLost('What is this stream?')
-
-    def write(self, data):
-        """Write bytes to the stream.
-
-        :raises: ConnectionLost if something goes wrong
-        """
-        if hasattr(self.stream, 'write'):
-            self.stream.write(data)
-        elif hasattr(self.stream, 'send'):
-            try:
-                self.stream.send(data)
-            except (socket.error, OSError):
-                raise ConnectionLost()
-        else:
-            raise ConnectionLost('What is this stream?')
-
-    def discard_until(self, byte):
-        """Reads any unexpected data until we encounter an expected byte.
-
-        :raises: ReadTimeout (via self.read()) if we never get it.
-        """
-        while True:
-            c = self.read(1)
-            if c == byte:
-                return c
-            LOG.warning('Seeking (discarded %s %02x)' % (c, c[0]))
-
-    def read_frame(self):
-        """Read a whole frame from the stream.
-
-        :returns: An array of int values, inclusive of the length and checksum
-                  bytes
-        :raises: ConnectionLost if something goes wrong or the stream cannot
-                 be parsed
-        """
-        return []
-
-    def write_frame(self, data):
-        """Write a whole frame to the stream.
-
-        NOTE: This adds the length and checksum bytes automatically.
-
-        :param: data is an array of integers
-        """
-        pass
-
-
-class NXASCII(NXProtocol):
-    def read_frame(self):
-        self.discard_until(b'\n')
-
-        start = time.time()
-        line = ''
-        while not line.endswith('\r'):
-            try:
-                c = self.read(1).decode()
-            except ReadTimeout:
-                LOG.error('Mid-frame read timeout (got %i: %r)' % (
-                    len(line), line))
-                raise ConnectionLost()
-            line += c
-            if time.time() - start > 60:
-                LOG.error('Timeout reading a line, killing connection')
-                raise ConnectionLost()
-
-        LOG.debug('Parsing ASCII frame %r' % line.strip())
-        try:
-            return parse_ascii(line.strip())
-        except Exception:
-            LOG.exception('Failed to parse raw ASCII line %r' % line.strip())
-            raise ConnectionLost()
-
-    def write_frame(self, data):
-        data = [len(data)] + data
-        data += fletcher(data)
-        raw = '\n%s\r' % make_ascii(data)
-        self.write(raw.encode())
-
-
-class NXBinary(NXProtocol):
-    def read_frame(self):
-        self.discard_until(b'\x7e')
-
-        length = self.read(1)[0]
-        buffer = [length]
-        start = time.time()
-
-        bytestuffed = False
-
-        i = 1
-        while (i <= length + 2):
-            try:
-                c = self.read(1)[0]
-            except ReadTimeout:
-                LOG.error('Mid-frame read timeout (expected %i got %i)' % (
-                    length, i))
-                raise ConnectionLost()
-
-            if c == 0x7e:
-                raise ConnectionLost('Received start byte mid-frame!')
-
-            # Adjust any byte stuffed bytes - Skip the current byte if so,
-            # then XOR the following byte with 0x20
-            if c == 0x7d:
-                bytestuffed = True
-            else:
-                if bytestuffed:
-                    c = c ^ 0x20
-                    bytestuffed = False
-                buffer.append(c)
-                i += 1
-
-            if time.time() - start > 60:
-                LOG.error('Timeout reading a line, killing connection')
-                raise ConnectionLost()
-
-        return buffer
-
-    def write_frame(self, data):
-        data = [len(data)] + data
-        data += fletcher(data)
-        # Byte Stuff Any 0x7d, 0x7e bytes
-        bytestuff = [i for i, x in enumerate(data) if x == 0x7d]
-        for i, index in reversed(list(enumerate(bytestuff))):
-            data[index:index+1] = [0x7d, 0x5d]
-        bytestuff = [i for i, x in enumerate(data) if x == 0x7e]
-        for i, index in reversed(list(enumerate(bytestuff))):
-            data[index:index+1] = [0x7d, 0x5e]
-
-        # add the start character 0x7e
-        data.insert(0, 0x7e)
-
-        self.write(bytes(data))
-
-
 class StreamWrapper(object):
     """Wraps a connection to the control panel.
 
     This mostly just manages connecting, reconnecting, and some error handling,
-    transparent to the protocol (ASCII or Binary) being used.
+    transparent to the protocol (ASCII, Binary, or NX587E) being used.
     """
     def __init__(self, portspec, config):
         self._portspec = portspec
         self._config = config
+        try:
+            nx587_val = self._config.get('config', 'use_nx587_device')
+            self._use_nx587_device = nx587_val.lower() in ('true', '1', 'yes')
+        except configparser.NoOptionError:
+            self._use_nx587_device = False
 
         try:
             self._use_binary_protocol = self._config.getboolean(
@@ -285,11 +62,14 @@ class StreamWrapper(object):
         self.connect()
 
     def connect(self):
+        # from nx584.nx587 import NX587Protocol
         sleep_time = 0
         while True:
             connected = self._connect()
             if connected:
-                if self._use_binary_protocol:
+                if self._use_nx587_device:
+                    self.protocol = NX587Protocol(self._s, self._config)
+                elif self._use_binary_protocol:
                     self.protocol = NXBinary(self._s)
                 else:
                     self.protocol = NXASCII(self._s)
@@ -361,6 +141,10 @@ class SerialWrapper(StreamWrapper):
 
 
 class NXController(object):
+    _FEATURE_LIST = (
+        'system_status', 'log_events', 'user_codes', 'set_time',
+    )
+
     def __init__(self, portspec, configfile):
         self._portspec = portspec
         self._configfile = configfile
@@ -389,6 +173,30 @@ class NXController(object):
             self._idle_time_heartbeat_seconds = 120
         self.messaging = None
         self.initial_mqtt_publish_all_completed = False
+        self.use_nx587_device = False
+        try:
+            nx587_val = self._config.get('config', 'use_nx587_device')
+            if isinstance(nx587_val, str):
+                self.use_nx587_device = nx587_val.lower() in ('true', '1', 'yes')
+        except configparser.NoOptionError:
+            self.use_nx587_device = False
+
+    @property
+    def protocol_features(self):
+        if self._adapter is None:
+            return {f: True for f in self._FEATURE_LIST}
+        return {f: self._adapter.supports_feature(f) for f in self._FEATURE_LIST}
+
+    @property
+    def protocol_unsupported_endpoints(self):
+        if self._adapter is None:
+            return set()
+        return self._adapter.get_unsupported_endpoints()
+
+    def protocol_needs_partition_for_bypass(self):
+        if self._adapter is None:
+            return False
+        return self._adapter.bypass_needs_partition()
 
     def connect(self):
         if '/' in self._portspec[0] or 'COM' in self._portspec[0]:
@@ -396,6 +204,18 @@ class NXController(object):
         else:
             self._ser = SocketWrapper(self._portspec, self._config)
             LOG.info('Connected')
+        command_delay = 0.5
+        if self.use_nx587_device:
+            try:
+                command_delay = float(
+                    self._config.get('nx587e', 'command_delay_seconds',
+                                     fallback='0.5'))
+            except (configparser.NoSectionError, ValueError):
+                command_delay = 0.5
+            self._adapter = NX587Adapter(self._ser.protocol, self._config,
+                                         command_delay)
+        else:
+            self._adapter = NX584Adapter(self)
 
     def _load_config(self):
         self._config = configparser.ConfigParser()
@@ -439,6 +259,8 @@ class NXController(object):
         if not data:
             return None
         self.last_active = time.time()
+        if isinstance(data, NXFrame):
+            return data
         try:
             frame = NXFrame.decode_line(data)
         except ReadFailure as e:
@@ -465,27 +287,29 @@ class NXController(object):
         self._queue.append([0x24, number - 1])
 
     def arm_stay(self, partition):
-        self._queue.append([0x3E, 0x00, partition])
+        self._adapter.arm_stay(partition)
 
     def arm_exit(self, partition):
-        self._queue.append([0x3E, 0x02, partition])
+        self._adapter.arm_exit(partition)
 
     def arm_auto(self, partition):
-        self._queue.append([0x3D, 0x05, 0x01, 0x01])
+        self._adapter.arm_auto(partition)
 
     def police_panic(self, partition):
-        self._queue.append([0x3E, 0x06, 0x01, partition])
+        self._adapter.police_panic(partition)
 
     def fire_panic(self, partition):
-        self._queue.append([0x3E, 0x04, 0x01, partition])
+        self._adapter.fire_panic(partition)
 
     def disarm(self, master_pin, partition):
-        self._queue.append([0x3C] +
-                           make_pin_buffer(master_pin) +
-                           [0x01, partition])
+        armed = False
+        if partition in self.partitions:
+            partition_obj = self.partitions[partition]
+            armed = partition_obj.armed or partition_obj.alarm
+        self._adapter.disarm(master_pin, partition, armed=armed)
 
-    def zone_bypass_toggle(self, zone):
-        self._queue.append([0x3F, zone - 1])
+    def zone_bypass_toggle(self, zone, **kwargs):
+        self._adapter.zone_bypass_toggle(zone, **kwargs)
 
     def get_system_status(self):
         self._queue.append([0x28])
@@ -507,7 +331,7 @@ class NXController(object):
         if len(master_pin) < 6:
             master_pin += '00'
         if len(master_pin) != 6:
-            LOG.error('Master pin %r incorrect length' % master_pin)
+            LOG.error('Master pin [REDACTED] incorrect length')
             return False
         digits = make_pin_buffer(master_pin)
         self._queue.append([0x32] + digits + [user_number])
@@ -521,9 +345,7 @@ class NXController(object):
         if 'pin' in changed:
             mstr_digits = make_pin_buffer(master_pin)
             user_digits = make_pin_buffer(user.pin)
-            LOG.info('Setting user %i PIN to `%s`' % (
-                user.number,
-                ''.join(str(x) for x in user.pin if x < 10)))
+            LOG.info('Setting user %i PIN to [REDACTED]', user.number)
             self._queue.append(
                 [0x34] + mstr_digits + [user.number] + user_digits)
         return True
@@ -588,15 +410,7 @@ class NXController(object):
         self.event_queue.push(event)
         for ext in self.extensions:
             ext.obj.zone_status(zone)
-        if self.messaging is not None:
-            state_str = 'true' if zone.state else 'false'
-            self.messaging.publish_zone_state(zone.number, state_str)
-            self.messaging.publish_zone_bypassed(zone.number,
-                                                 str(zone.bypassed).lower())
-            self.messaging.publish_zone_condition_flags(zone.number,
-                                                         zone.condition_flags)
-            self.messaging.publish_zone_type_flags(zone.number,
-                                                    zone.type_flags)
+        self._publish_zone_messaging(zone)
 
     def _send_flag_notifications(self, flags_section, flags_key, asserted,
                                  deasserted, email_fn):
@@ -636,18 +450,7 @@ class NXController(object):
                                         partition.condition_flags))
         for ext in self.extensions:
             ext.obj.partition_status(partition)
-        if self.messaging is not None:
-            if not self.initial_mqtt_publish_all_completed:
-                self.publish_all()
-                self.initial_mqtt_publish_all_completed = True
-                # Publish online after initial sync completes
-                self.messaging.publish_system_avail('online')
-            else:
-                state_str = self.get_partition_state_string(partition)
-                self.messaging.publish_partition_state(
-                    partition.number, state_str)
-                self.messaging.publish_partition_condition_flags(
-                    partition.number, partition.condition_flags)
+        self._publish_partition_messaging(partition)
 
         deasserted = set(orig_flags) - set(partition.condition_flags)
         asserted = set(partition.condition_flags) - set(orig_flags)
@@ -696,6 +499,34 @@ class NXController(object):
         if self.messaging is not None:
             self.messaging.publish_all()
 
+    def _publish_zone_messaging(self, zone):
+        """Publish zone state to all messaging backends (MQTT, etc)."""
+        if self.messaging is None:
+            return
+        state_str = 'true' if zone.state else 'false'
+        self.messaging.publish_zone_state(zone.number, state_str)
+        self.messaging.publish_zone_bypassed(zone.number,
+                                             str(zone.bypassed).lower())
+        self.messaging.publish_zone_condition_flags(zone.number,
+                                                    zone.condition_flags)
+        self.messaging.publish_zone_type_flags(zone.number, zone.type_flags)
+        self.messaging.publish_zone_name(zone.number, zone.name)
+
+    def _publish_partition_messaging(self, partition):
+        """Publish partition state to all messaging backends (MQTT, etc)."""
+        if self.messaging is None:
+            return
+        if not self.initial_mqtt_publish_all_completed:
+            self.publish_all()
+            self.initial_mqtt_publish_all_completed = True
+            self.messaging.publish_system_avail('online')
+        else:
+            state_str = self.get_partition_state_string(partition)
+            self.messaging.publish_partition_state(
+                partition.number, state_str)
+            self.messaging.publish_partition_condition_flags(
+                partition.number, partition.condition_flags)
+
     def process_msg_8(self, frame):
         errors = model.System.STATUS_FLAGS[1] + model.System.STATUS_FLAGS[2]
         status = frame.data[1:10]
@@ -732,8 +563,7 @@ class NXController(object):
         for flag in asserted:
             _log(flag, True)
 
-        for ext in self.extensions:
-            ext.obj.system_status(self.system)
+        self._notify_extensions('system_status', self.system)
 
         if asserted or deasserted:
             mail.send_system_email(self._config, deasserted, asserted)
@@ -754,8 +584,9 @@ class NXController(object):
                  'device': '%s%02i' % (house, unit),
                  'command': '%s' % cmd}
         self.event_queue.push(event)
-        for ext in self.extensions:
-            ext.obj.device_command(house, unit, cmd)
+        if not self.use_nx587_device:
+            for ext in self.extensions:
+                ext.obj.device_command(house, unit, cmd)
 
     def process_msg_10(self, frame):
         event = model.LogEvent()
@@ -795,10 +626,12 @@ class NXController(object):
                   'timestamp': event.timestamp.isoformat(),
               }
         self.event_queue.push(_event)
-        for ext in self.extensions:
-            ext.obj.log_event(event)
+        if not self.use_nx587_device:
+            for ext in self.extensions:
+                ext.obj.log_event(event)
 
-        mail.send_log_event_mail(self._config, event)
+        if not self.use_nx587_device:
+            mail.send_log_event_mail(self._config, event)
 
     def process_msg_18(self, frame):
         user = self._get_user(frame.data[0])
@@ -819,30 +652,112 @@ class NXController(object):
                 user.authorized_partitions.append(i + 1)
         LOG.info('Received information about user %i' % user.number)
 
+    def process_nx587_frame(self, frame):
+        prefix = frame.data.get('prefix')
+        if prefix == 'ZN':
+            self.process_nx587_zone_status(frame)
+        elif prefix == 'PA':
+            self.process_nx587_partition_status(frame)
+
+    def process_nx587_zone_status(self, frame):
+        zone_num = frame.data['zone_number']
+        status = frame.data['status']
+        name = frame.data.get('name')
+
+        zone = self.zones.setdefault(zone_num, model.Zone(zone_num))
+        zone.state = bool(status['Faulted'])
+        zone.condition_flags = []
+        for flag_name in ('Faulted', 'Tamper', 'Trouble', 'Bypass',
+                          'Alarm memory', 'Inhibit', 'Low battery',
+                          'Lost', 'Bypass memory'):
+            if status[flag_name]:
+                zone.condition_flags.append(flag_name)
+
+        if name is not None and not self._config.has_option('zones', str(zone_num)):
+            zone.name = name
+            if self.zone_name_update:
+                self._write_config()
+
+        LOG.info('Zone %i (%s) state is %s' % (
+            zone.number, zone.name,
+            zone.state and 'FAULT' or 'NORMAL'))
+        LOG.debug('Zone %i (%s) %s' % (zone.number, zone.name,
+                                        zone.condition_flags))
+        event = {'type': 'zone_status',
+                 'timestamp': datetime.datetime.now().isoformat(),
+                 'zone': zone.number,
+                 'zone_state': zone.state,
+                 'zone_flags': zone.condition_flags,
+                 }
+        self.event_queue.push(event)
+        for ext in self.extensions:
+            ext.obj.zone_status(zone)
+        self._publish_zone_messaging(zone)
+
+    def process_nx587_partition_status(self, frame):
+        part_num = frame.data['partition_number']
+        status = frame.data['status']
+
+        partition = self.partitions.setdefault(part_num, model.Partition(part_num))
+        was_armed = partition.armed
+        status_names = ['Ready to arm', 'Armed', 'Entryguard (stay mode)',
+                        'Chime mode on', 'Entry', 'Exit 1', 'Previous alarm',
+                        'Siren on']
+        partition.condition_flags = []
+        for name in status_names:
+            if status.get(name):
+                partition.condition_flags.append(name)
+        if was_armed != partition.armed:
+            LOG.info('Partition %i %s armed' % (
+                partition.number,
+                '' if partition.armed else 'not'))
+        LOG.debug('Partition %i %s' % (partition.number,
+                                        partition.condition_flags))
+        for ext in self.extensions:
+            ext.obj.partition_status(partition)
+        self._publish_partition_messaging(partition)
+
+        deasserted = set() - set(partition.condition_flags)
+        asserted = set(partition.condition_flags) - set()
+        changed = asserted | deasserted
+
+        event = {'type': 'partition',
+                 'timestamp': datetime.datetime.now().isoformat(),
+                 'partition': partition.number,
+                 'partition_flags_asserted': list(asserted),
+                 'partition_flags': partition.condition_flags,
+                 'partition_was_armed': was_armed,
+                 'partition_is_armed': partition.armed,
+                 }
+        self.event_queue.push(event)
+
+        if changed:
+            mail.send_partition_email(self._config, partition,
+                                      deasserted, asserted)
+
+    def _execute_command(self, cmd, **kwargs):
+        self._adapter.execute_command(cmd, **kwargs)
+
+    def _drain_queue(self, frame=None):
+        self._adapter.drain_queue()
+
     def _run_queue(self):
-        if not self._queue:
+        self._adapter.drain_queue()
+
+    def _notify_extensions(self, callback_name, *args):
+        should_call = self._adapter.notify_extensions(callback_name, *args)
+        if not should_call:
             return
-        msg = self._queue.pop(0)
-        LOG.debug('Sending queued %s' % msg)
-        self._send(msg)
+        for ext in self.extensions:
+            callback = getattr(ext.obj, callback_name, None)
+            if callback:
+                callback(*args)
 
     def generate_heartbeat_activity(self):
-        self.get_system_status()
+        self._adapter.generate_heartbeat()
 
     def controller_loop(self):
-        self.set_time()
-        self.get_system_status()
-
-        try:
-            max_zone = self._config.getint('config', 'max_zone')
-        except configparser.NoOptionError:
-            max_zone = 8
-            self._config.set('config', 'max_zone', str(max_zone))
-
-        for i in range(1, max_zone + 1):
-            self.get_zone_status(i)
-            if not self._config.has_option('zones', str(i)):
-                self.get_zone_name(i)
+        self._adapter.startup_sequence()
 
         watchdog = time.time()
 
@@ -859,9 +774,19 @@ class NXController(object):
                     watchdog = time.time()
                 continue
             watchdog = time.time()
+            if frame.msgtype < len(model.MSG_TYPES):
+                type_name = frame.type_name
+            else:
+                type_name = 'NX587E'
             LOG.debug('Received: %i %s (data %s)' % (frame.msgtype,
-                                                     frame.type_name,
-                                                     frame.data))
+                                                      type_name,
+                                                      frame.data))
+            if self.use_nx587_device and frame.msgtype == 0xFF:
+                self.process_nx587_frame(frame)
+                if frame.ack_required:
+                    LOG.debug('Sending ACK')
+                    self.send_ack()
+                continue
             if frame.ack_required:
                 LOG.debug('Sending ACK')
                 self.send_ack()

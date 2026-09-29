@@ -184,8 +184,26 @@ class System(object):
     ]
 
     def __init__(self):
-        self.panel_id = 0
+        self.panel_id = None
         self.status_flags = []
+        self.ac_fail = None
+        self.low_battery = None
+        self.phone_fault = None
+        self.power_fail = None
+        self.system_trouble = None
+        self.panel_cleared = None
+        self.local_alarm = None
+        self.remote_alarm = None
+        self.phone_tier_1 = None
+        self.phone_tier_2 = None
+        self.fire_alarm = None
+        self.burglar_alarm = None
+        self.gas_alarm = None
+        self.water_alarm = None
+        self.freeze_alarm = None
+        self.trouble_alarm = None
+        self.supervisory_alarm = None
+        self.state_alarm = None
 
 
 class LogEvent(object):

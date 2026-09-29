@@ -8,8 +8,6 @@ backends so that HTTP and MQTT can coexist without if/then branching.
 import abc
 import logging
 
-from nx584._controller import CONTROLLER
-
 LOG = logging.getLogger('nx584.messaging')
 
 

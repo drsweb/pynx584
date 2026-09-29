@@ -17,7 +17,6 @@ try:
 except ImportError:
     _HAS_PAHO = False
 
-from nx584._controller import CONTROLLER as _controller
 from nx584.messaging import Messaging
 
 LOG = logging.getLogger('nx584.mqtt_messaging')
@@ -26,7 +25,7 @@ LOG = logging.getLogger('nx584.mqtt_messaging')
 class MqttMessaging(Messaging):
     """MQTT messaging backend using paho-mqtt."""
 
-    def __init__(self, host, port, username=None, password=None,
+    def __init__(self, host, port, controller, username=None, password=None,
                  state_topic_root='home/alarm', command_topic='home/alarm/set',
                  tls_active=False, tls_insecure=False, timeout_sec=10):
         """Initialize MQTT messaging backend.
@@ -34,6 +33,7 @@ class MqttMessaging(Messaging):
         Args:
             host: MQTT broker hostname or IP.
             port: MQTT broker port.
+            controller: The NXController instance.
             username: Optional username for authentication.
             password: Optional password for authentication.
             state_topic_root: Base topic for state publications.
@@ -59,6 +59,7 @@ class MqttMessaging(Messaging):
         self._tls_insecure = tls_insecure
         self._timeout = timeout_sec
         self._dt_sync_counter = 0
+        self._controller = controller
         self.client = None
         self.connected = False
 
@@ -237,21 +238,21 @@ class MqttMessaging(Messaging):
         if not _HAS_PAHO or not self.connected:
             return
 
-        if _controller is None:
+        if self._controller is None:
             LOG.error('Controller not connected.')
             return
 
         try:
-            self.publish_system_id(_controller.system.panel_id)
-            self.publish_system_info(_controller.system.status_flags)
+            self.publish_system_id(self._controller.system.panel_id)
+            self.publish_system_info(self._controller.system.status_flags)
             self.publish_system_datetime()
         except Exception:
             LOG.exception('Error in publish_all system section')
 
         try:
-            for partition in _controller.partitions.values():
+            for partition in self._controller.partitions.values():
                 try:
-                    state_str = _controller.get_partition_state_string(partition)
+                    state_str = self._controller.get_partition_state_string(partition)
                     self.publish_partition_state(partition.number, state_str)
                     self.publish_partition_condition_flags(
                         partition.number, partition.condition_flags)
@@ -261,7 +262,7 @@ class MqttMessaging(Messaging):
             LOG.exception('Error in publish_all partition section')
 
         try:
-            for zone in _controller.zones.values():
+            for zone in self._controller.zones.values():
                 try:
                     self.publish_zone_name(zone.number, zone.name)
                     self.publish_zone_type_flags(zone.number, zone.type_flags)
@@ -324,7 +325,7 @@ class MqttMessaging(Messaging):
             LOG.info('MQTT command received on topic %s: %s', msg.topic,
                      self._redact_pin(payload))
 
-            if _controller is None:
+            if self._controller is None:
                 LOG.error('Controller not connected.')
                 return
 
@@ -333,7 +334,7 @@ class MqttMessaging(Messaging):
                 if len(fields) >= 2:
                     try:
                         zone = int(fields[1])
-                        _controller.zone_bypass_toggle(zone)
+                        self._controller.zone_bypass_toggle(zone)
                     except (ValueError, TypeError):
                         LOG.error('Invalid zone number: %s', fields[1])
             elif payload.startswith('arm_away'):
@@ -342,7 +343,7 @@ class MqttMessaging(Messaging):
                 if not valid:
                     LOG.error('Invalid partition number: %s', fields[1])
                 else:
-                    _controller.arm_exit(partition)
+                    self._controller.arm_exit(partition)
                     client.publish(self._command_topic, 'nop', retain=True)
             elif payload.startswith('arm_home'):
                 fields = payload.split(',', 3)
@@ -350,7 +351,7 @@ class MqttMessaging(Messaging):
                 if not valid:
                     LOG.error('Invalid partition number: %s', fields[1])
                 else:
-                    _controller.arm_stay(partition)
+                    self._controller.arm_stay(partition)
                     client.publish(self._command_topic, 'nop', retain=True)
             elif payload.startswith('disarm'):
                 fields = payload.split(',', 3)
@@ -366,17 +367,17 @@ class MqttMessaging(Messaging):
                 else:
                     pin = None
                 if pin:
-                    _controller.disarm(pin, partition)
+                    self._controller.disarm(pin, partition)
                     client.publish(self._command_topic, 'nop', retain=True)
             elif payload == 'time':
-                _controller.set_time()
+                self._controller.set_time()
             elif payload.startswith('police'):
                 fields = payload.split(',', 2)
                 partition, valid = self._parse_partition(fields)
                 if not valid:
                     LOG.error('Invalid partition number: %s', fields[1])
                 else:
-                    _controller.police_panic(partition)
+                    self._controller.police_panic(partition)
                     client.publish(self._command_topic, 'nop', retain=True)
             elif payload.startswith('fire'):
                 fields = payload.split(',', 2)
@@ -384,10 +385,10 @@ class MqttMessaging(Messaging):
                 if not valid:
                     LOG.error('Invalid partition number: %s', fields[1])
                 else:
-                    _controller.fire_panic(partition)
+                    self._controller.fire_panic(partition)
                     client.publish(self._command_topic, 'nop', retain=True)
             elif payload == 'status':
-                _controller.publish_all()
+                self._controller.publish_all()
             elif payload == 'nop':
                 pass
             else:

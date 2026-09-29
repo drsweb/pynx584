@@ -43,15 +43,15 @@ class TestMqttMessaging(unittest.TestCase):
             mock_client_class.return_value = self.mock_client
 
             self.mock_controller = MockController()
-            with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-                self.mqtt = MqttMessaging(
-                    host='localhost',
-                    port=1883,
-                    state_topic_root='home/alarm',
-                    command_topic='home/alarm/set',
-                )
-                # Simulate successful connection
-                self.mock_client.on_connect(self.mock_client, None, None, 0)
+            self.mqtt = MqttMessaging(
+                host='localhost',
+                port=1883,
+                controller=self.mock_controller,
+                state_topic_root='home/alarm',
+                command_topic='home/alarm/set',
+            )
+            # Simulate successful connection
+            self.mock_client.on_connect(self.mock_client, None, None, 0)
 
     def test_mqtt_connect_calls_loop_start(self):
         """connect() starts background loop."""
@@ -82,48 +82,42 @@ class TestMqttMessaging(unittest.TestCase):
         """on_message() dispatches arm_away command."""
         msg = MagicMock()
         msg.payload = b'arm_away,1'
-        with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-            self.mqtt.on_message(self.mock_client, None, msg)
+        self.mqtt.on_message(self.mock_client, None, msg)
         self.mock_controller.arm_exit.assert_called_with(1)
 
     def test_mqtt_on_message_arm_home(self):
         """on_message() dispatches arm_home command."""
         msg = MagicMock()
         msg.payload = b'arm_home,2'
-        with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-            self.mqtt.on_message(self.mock_client, None, msg)
+        self.mqtt.on_message(self.mock_client, None, msg)
         self.mock_controller.arm_stay.assert_called_with(2)
 
     def test_mqtt_on_message_disarm(self):
         """on_message() dispatches disarm command."""
         msg = MagicMock()
         msg.payload = b'disarm,1,1234'
-        with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-            self.mqtt.on_message(self.mock_client, None, msg)
+        self.mqtt.on_message(self.mock_client, None, msg)
         self.mock_controller.disarm.assert_called_with('1234', 1)
 
     def test_mqtt_on_message_bypass_toggle(self):
         """on_message() dispatches bypass_toggle command."""
         msg = MagicMock()
         msg.payload = b'bypass_toggle,3'
-        with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-            self.mqtt.on_message(self.mock_client, None, msg)
+        self.mqtt.on_message(self.mock_client, None, msg)
         self.mock_controller.zone_bypass_toggle.assert_called_with(3)
 
     def test_mqtt_on_message_time(self):
         """on_message() dispatches time command."""
         msg = MagicMock()
         msg.payload = b'time'
-        with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-            self.mqtt.on_message(self.mock_client, None, msg)
+        self.mqtt.on_message(self.mock_client, None, msg)
         self.mock_controller.set_time.assert_called_once()
 
     def test_mqtt_on_message_status(self):
         """on_message() dispatches status command."""
         msg = MagicMock()
         msg.payload = b'status'
-        with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-            self.mqtt.on_message(self.mock_client, None, msg)
+        self.mqtt.on_message(self.mock_client, None, msg)
         self.mock_controller.publish_all.assert_called_once()
 
     def test_mqtt_on_message_nop(self):
@@ -144,35 +138,42 @@ class TestMqttMessaging(unittest.TestCase):
         """on_message() publishes nop after arm/disarm."""
         msg = MagicMock()
         msg.payload = b'arm_away,1'
-        with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-            self.mqtt.on_message(self.mock_client, None, msg)
+        self.mqtt.on_message(self.mock_client, None, msg)
         calls = [c for c in self.mock_client.publish.call_args_list
                  if c[0][0] == 'home/alarm/set' and c[0][1] == 'nop']
         self.assertTrue(len(calls) > 0, 'nop should be published after arm_away')
 
     def test_mqtt_topic_construction(self):
         """All topic builder methods produce correct topics."""
-        self.assertEqual(self.mqtt._zone_state_topic(1),
+        mock_ctrl = MockController()
+        mqtt = MqttMessaging(
+            host='localhost',
+            port=1883,
+            controller=mock_ctrl,
+            state_topic_root='home/alarm',
+            command_topic='home/alarm/set',
+        )
+        self.assertEqual(mqtt._zone_state_topic(1),
                          'home/alarm/zones/1/faulted')
-        self.assertEqual(self.mqtt._zone_bypassed_topic(2),
+        self.assertEqual(mqtt._zone_bypassed_topic(2),
                          'home/alarm/zones/2/bypassed')
-        self.assertEqual(self.mqtt._zone_types_topic(3),
+        self.assertEqual(mqtt._zone_types_topic(3),
                          'home/alarm/zones/3/types')
-        self.assertEqual(self.mqtt._zone_conditions_topic(4),
+        self.assertEqual(mqtt._zone_conditions_topic(4),
                          'home/alarm/zones/4/conditions')
-        self.assertEqual(self.mqtt._zone_name_topic(5),
+        self.assertEqual(mqtt._zone_name_topic(5),
                          'home/alarm/zones/5/name')
-        self.assertEqual(self.mqtt._partition_state_topic(1),
+        self.assertEqual(mqtt._partition_state_topic(1),
                          'home/alarm/partitions/1/state')
-        self.assertEqual(self.mqtt._partition_conditions_topic(2),
+        self.assertEqual(mqtt._partition_conditions_topic(2),
                          'home/alarm/partitions/2/conditions')
-        self.assertEqual(self.mqtt._system_id_topic(),
+        self.assertEqual(mqtt._system_id_topic(),
                          'home/alarm/system/id')
-        self.assertEqual(self.mqtt._system_info_topic(),
+        self.assertEqual(mqtt._system_info_topic(),
                          'home/alarm/system/info')
-        self.assertEqual(self.mqtt._system_datetime_topic(),
+        self.assertEqual(mqtt._system_datetime_topic(),
                          'home/alarm/system/datetime')
-        self.assertEqual(self.mqtt._system_avail_topic(),
+        self.assertEqual(mqtt._system_avail_topic(),
                          'home/alarm/system/avail')
 
     def test_mqtt_publish_all_full_sync(self):
@@ -191,8 +192,7 @@ class TestMqttMessaging(unittest.TestCase):
         mock_zone.state = True
         self.mock_controller.zones[1] = mock_zone
 
-        with patch('nx584.mqtt_messaging._controller', self.mock_controller):
-            self.mqtt.publish_all()
+        self.mqtt.publish_all()
 
         self.mock_client.publish.assert_any_call(
             'home/alarm/system/id', '12345', 1, True)

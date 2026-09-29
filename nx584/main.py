@@ -1,13 +1,16 @@
 import argparse
+import atexit
 import logging
 import logging.handlers
 import os
+import re
 import sys
 import threading
+import time
 
 from nx584 import api
 from nx584 import controller
-from nx584 import _controller
+from nx584 import mqtt_messaging
 from nx584.messaging import CompositeMessaging
 from nx584.http_messaging import HttpMessaging
 
@@ -15,6 +18,55 @@ VERSION = '0.8.3'
 
 LOG_FORMAT = '%(asctime)-15s %(module)s %(levelname)s %(message)s'
 LOG = logging.getLogger('nx584.main')
+
+
+def _redact_query_params(msg):
+    """Redact sensitive query parameter values from log messages."""
+    if isinstance(msg, str):
+        for param in ('master_pin', 'pin'):
+            msg = re.sub(r'(%s)=[^&]*' % param, r'\1=[REDACTED]', msg)
+    return msg
+
+
+class PinRedactingFilter(logging.Filter):
+    """Logging filter that redacts PINs from log messages."""
+
+    def filter(self, record):
+        record.msg = _redact_query_params(str(record.msg))
+        if record.args:
+            if isinstance(record.args, dict):
+                record.args = {k: _redact_query_params(str(v)) if isinstance(v, str) else v for k, v in record.args.items()}
+            elif isinstance(record.args, tuple):
+                record.args = tuple(_redact_query_params(str(v)) if isinstance(v, str) else v for v in record.args)
+        return True
+
+
+class RedactingLogger:
+    """Logger wrapper that redacts sensitive query parameters."""
+
+    def __init__(self, logger):
+        self._logger = logger
+
+    def info(self, msg, *args, **kwargs):
+        self._logger.info(_redact_query_params(msg), *args, **kwargs)
+
+    def warning(self, msg, *args, **kwargs):
+        self._logger.warning(_redact_query_params(msg), *args, **kwargs)
+
+    def error(self, msg, *args, **kwargs):
+        self._logger.error(_redact_query_params(msg), *args, **kwargs)
+
+    def exception(self, msg, *args, **kwargs):
+        self._logger.exception(_redact_query_params(msg), *args, **kwargs)
+
+    def debug(self, msg, *args, **kwargs):
+        self._logger.debug(_redact_query_params(msg), *args, **kwargs)
+
+    def critical(self, msg, *args, **kwargs):
+        self._logger.critical(_redact_query_params(msg), *args, **kwargs)
+
+    def fatal(self, msg, *args, **kwargs):
+        self._logger.fatal(_redact_query_params(msg), *args, **kwargs)
 
 
 def _read_mqtt_config(config):
@@ -109,6 +161,7 @@ def _build_messaging(ctrl, mqtt_config, args):
         mqtt = MqttMessaging(
             host=mqtt_host,
             port=mqtt_port,
+            controller=ctrl,
             username=mqtt_username,
             password=mqtt_password,
             state_topic_root=mqtt_state_topic_root,
@@ -187,6 +240,7 @@ def main():
     parser.add_argument('--timeout', default=None, type=int,
                         metavar='SECS',
                         help='MQTT connection timeout in seconds (default: 10)')
+
     args = parser.parse_args()
 
     if args.version:
@@ -232,20 +286,20 @@ def main():
 
     if args.connect:
         host, port = args.connect.split(':')
-        ctrl = controller.NXController((host, int(port)),
-                                        args.config)
+        ctrl = controller.NXController((host, int(port)), args.config)
     elif args.serial:
-        ctrl = controller.NXController((args.serial, args.baudrate),
-                                        args.config)
+        ctrl = controller.NXController((args.serial, args.baudrate), args.config)
     else:
         LOG.error('Either host:port or serial and baudrate are required')
         return
-
-    # Set controller references BEFORE building messaging backends
+    # Set controller reference BEFORE building messaging backends
     # (MQTT client starts its event loop during _build_messaging,
     #  so on_message may fire before we get here)
-    _controller.CONTROLLER = ctrl
-    api.CONTROLLER = ctrl
+    api.set_controller(ctrl)
+
+    for logger_name in ('werkzeug', 'flask._internal'):
+        logger = logging.getLogger(logger_name)
+        logger.addFilter(PinRedactingFilter())
 
     # Read MQTT config from config.ini
     mqtt_config = _read_mqtt_config(ctrl._config)
@@ -259,7 +313,6 @@ def main():
     mqtt_only = args.mqtt is not None and (args.listen == '' or args.listen is None)
     if mqtt_only:
         LOG.info('MQTT-only mode enabled')
-        import atexit
 
         def publish_offline():
             if hasattr(ctrl.messaging, '_publishLWT'):
@@ -276,7 +329,6 @@ def main():
             if hasattr(ctrl.messaging, 'connected') and ctrl.messaging.connected:
                 # Wait for initial sync to complete
                 if not ctrl.initial_mqtt_publish_all_completed:
-                    import time
                     time.sleep(1)
                     continue
 
@@ -286,7 +338,6 @@ def main():
                         ctrl.messaging.publish_system_avail('online')
                     online_published = True
                 # Continue polling loop, check every 5 seconds
-                import time
                 time.sleep(5)
             else:
                 wait_count += 1
@@ -294,7 +345,6 @@ def main():
                     LOG.error('MQTT broker not reachable after %d seconds',
                               max_wait * 5)
                     sys.exit(1)
-                import time
                 time.sleep(5)
                 LOG.info('Waiting for MQTT broker... (%d/%d)',
                          wait_count, max_wait)

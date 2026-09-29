@@ -141,11 +141,20 @@ def do_set_user_pin(clnt, args):
 
 
 def do_events(clnt, args):
-    while True:
-        events = clnt.get_events()
-        if events:
-            for event in events:
-                print(event)
+    import msvcrt
+    print('Press ESC to exit...')
+    try:
+        while True:
+            events = clnt.get_events(timeout=1)
+            if events:
+                for event in events:
+                    print(event)
+            if msvcrt.kbhit():
+                key = msvcrt.getwch()
+                if key == '\x1b':  # Escape
+                    break
+    except KeyboardInterrupt:
+        pass
 
 
 def do_version(clnt, args):

@@ -158,6 +158,11 @@ it with zone names::
  # Defaults to False
  # use_binary_protocol = True
 
+ # Set To true if using an NX587e device to communicate with your security panel
+ # If true, add [nx587e] section to config
+ # Defaults to False
+ # use_nx587_device = True
+
  # Length of idle time before sending heartbeat keep alive
  # (This is useful with the NX590 as it disconnects idle connections in a
  # short period of time)
@@ -168,13 +173,21 @@ it with zone names::
  fromaddr = security@foo.com
  smtphost = imap.foo.com
  
- [zones]
- # Zone names
- 1 = Front Door
- 2 = Garage Entry
- 3 = Garage Side
- 4 = Garage Back
- 5 = Kitchen
+  [zones]
+  # Zone names
+  1 = Front Door
+  2 = Garage Entry
+  3 = Garage Side
+  4 = Garage Back
+  5 = Kitchen
+
+  [nx587e]
+  command_delay_seconds = 0.5
+
+  # auto_arm_mode: what the arm-auto command sends for NX587E protocol
+  # set this to match the "arm auto in stay mode" setting of your NX Panel
+  # Valid values: stay, exit (default: exit)
+  # auto_arm_mode = stay
 
 MQTT Support
 ************
