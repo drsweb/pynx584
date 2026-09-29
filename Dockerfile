@@ -2,6 +2,7 @@ FROM python:3.14
 
 ENV LISTEN=0.0.0.0
 
+RUN pip install --no-cache-dir paho-mqtt
 RUN pip install --no-cache-dir pynx584
 
 EXPOSE 5007

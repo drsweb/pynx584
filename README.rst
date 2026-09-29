@@ -19,6 +19,11 @@ Install Locally
 
  # pip install pynx584
 
+
+Or to enable MQTT messaging, install the optional dependency::
+
+ # pip install pynx584[mqtt]
+
 The server must be run on a machine with connectivity to the panel,
 which can be a local serial port, or a Serial-over-LAN device (i.e. a
 TCP socket). For example::
@@ -51,10 +56,16 @@ Once that is running, you should be able to do something like this::
  # Auto-arm (no bypass, no entry zone trip required)
  $ nx584_client arm-auto
 
- # Disarm
- $ nx584_client disarm --master 1234
- 
-Install via Docker Compose
+  # Disarm
+  $ nx584_client disarm --master 1234
+
+  # Trigger police panic (partition 1)
+  $ nx584_client police --partition 1
+
+  # Trigger fire panic (partition 2)
+  $ nx584_client fire --partition 2
+
+  Install via Docker Compose
 **************************
 Before creating the Docker container, you need to define how you connect to the panel (local serial port, or a Serial-over-LAN device (i.e. a TCP socket)) in the :code:`docker-compose.yml` file. Uncomment and edit the :code:`environment` section to fit your needs::
 
@@ -82,8 +93,50 @@ To build the image, create the Docker container and then run it, make sure you'r
 
 You should now be able to conect to the pynx584 Docker container via its exposed port (default :code:`5007`).
 
+MQTT with Docker Compose
+************************
+
+To enable MQTT with Docker, mount a config.ini with an ``[mqtt]`` section and add the ``--mqtt`` flag::
+
+  version: "3.2"
+
+  services:
+    pynx584:
+      container_name: pynx584
+      image: ghcr.io/kk7ds/pynx584
+      devices:
+        - "/dev/ttyUSB0:/dev/ttyUSB0"
+      volumes:
+        - ./config:/config
+      command:
+        - --serial
+        - /dev/ttyUSB0
+        - --baudrate
+        - "38400"
+        - --mqtt
+        - --listen
+        - ""
+      depends_on:
+        - mqtt-broker
+
+    mqtt-broker:
+      container_name: mqtt-broker
+      image: eclipse-mosquitto:latest
+      ports:
+        - "1883:1883"
+
+The ``config/alarm.ini`` should contain::
+
+  [config]
+  max_zone = 5
+
+  [mqtt]
+  host = mqtt-broker
+  port = 1883
+  state_topic_root = home/alarm
+
 Config
-------
+******
 
 The `config.ini` should be generated once the controller reports the first
 zone name. However, here is a full `config.ini` if you want to pre-populate
@@ -123,9 +176,77 @@ it with zone names::
  4 = Garage Back
  5 = Kitchen
 
+MQTT Support
+************
+
+To enable MQTT messaging, install the optional dependency::
+
+ # pip install pynx584[mqtt]
+
+Add an ``[mqtt]`` section to your ``config.ini``::
+
+ [mqtt]
+ host = 192.168.1.100
+ port = 1883
+ username = myuser
+ password = mypass
+ state_topic_root = home/alarm
+ command_topic = home/alarm/set
+ tls_active = False
+ tls_insecure = False
+ timeout = 10
+
+Enable MQTT with the ``--mqtt`` flag::
+
+ # nx584_server --serial /dev/ttyS0 --baud 38400 --mqtt
+
+The server supports three modes:
+
+- **HTTP-only** (default): No ``--mqtt`` flag
+- **HTTP+MQTT**: ``--mqtt`` flag (with or without ``--listen``)
+- **MQTT-only**: ``--mqtt`` flag with ``--listen ''`` (empty string)
+
+MQTT parameters can be overridden via CLI::
+
+ # nx584_server --serial /dev/ttyS0 --mqtt 192.168.1.100 --mqttPort 1884
+
+MQTT Topic Structure
+********************
+
+State topics (published by pynx584, retained)::
+
+ home/alarm/zones/{N}/faulted        — Zone faulted state (true/false)
+ home/alarm/zones/{N}/bypassed       — Zone bypassed state (true/false)
+ home/alarm/zones/{N}/types          — Zone type flags (list string)
+ home/alarm/zones/{N}/conditions     — Zone condition flags (list string)
+ home/alarm/zones/{N}/name           — Zone name
+  home/alarm/partitions/{N}/state     — Partition state (disarmed/armed_away/armed_home/triggered)
+ home/alarm/partitions/{N}/conditions — Partition condition flags (list string)
+ home/alarm/system/id                — Panel ID
+ home/alarm/system/info              — System status flags (list string)
+ home/alarm/system/datetime          — System datetime (not retained)
+  home/alarm/system/avail             — Availability (online/offline)
+
+Note: "initializing" state is planned for future implementation but not yet supported.
+
+Command topic (subscribed by pynx584)::
+
+ home/alarm/set
+
+Commands::
+
+  bypass_toggle,{zone}    — Toggle zone bypass
+  arm_away,{partition}    — Arm partition away
+  arm_home,{partition}    — Arm partition home (stay)
+  disarm,{partition},{code}  — Disarm partition
+  police,{partition}      — Trigger police panic
+  fire,{partition}        — Trigger fire panic
+  time                    — Set controller time
+  status                  — Trigger full state republish
+  nop                     — No operation (clears command)
 
 Panel Configuration
--------------------
+*******************
 
 Your NX panel must be configured properly to allow this software to
 work with it. If it was configured by a monitoring company, there is a

@@ -76,6 +76,17 @@ def command():
             CONTROLLER.arm_auto(int(args.get('partition', 1)))
     elif args.get('cmd') == 'disarm':
         CONTROLLER.disarm(args.get('master_pin'), int(args.get('partition', 1)))
+    elif args.get('cmd') == 'police':
+        CONTROLLER.police_panic(int(args.get('partition', 1)))
+    elif args.get('cmd') == 'fire':
+        CONTROLLER.fire_panic(int(args.get('partition', 1)))
+    elif args.get('cmd') == 'status':
+        if CONTROLLER and hasattr(CONTROLLER, 'messaging'):
+            CONTROLLER.publish_all()
+        return flask.Response(json.dumps({
+            'status': 'ok',
+            'message': 'Full state republish triggered'
+        }), mimetype='application/json')
     return flask.Response()
 
 

@@ -96,6 +96,10 @@ class Zone(object):
         return ('Inhibit' in self.condition_flags or
                 'Bypass' in self.condition_flags)
 
+    @property
+    def faulted(self):
+        return 'Faulted' in self.condition_flags
+
 
 class Partition(object):
     CONDITION_FLAGS = [
@@ -130,6 +134,16 @@ class Partition(object):
     @property
     def armed(self):
         return 'Armed' in self.condition_flags
+
+    @property
+    def armedHome(self):
+        return ('Entryguard (stay mode)' in self.condition_flags or
+                'Silent exit enabled' in self.condition_flags or
+                'Instant' in self.condition_flags)
+
+    @property
+    def alarm(self):
+        return 'Siren on' in self.condition_flags
 
 
 class System(object):

@@ -55,6 +55,14 @@ def do_disarm(clnt, args):
     clnt.disarm(args.master, args.partition)
 
 
+def do_police(clnt, args):
+    clnt.police(args.partition)
+
+
+def do_fire(clnt, args):
+    clnt.fire(args.partition)
+
+
 def do_summary(clnt, args):
     t = prettytable.PrettyTable(['Zone', 'Name', 'Bypass', 'Status'])
     for zone in clnt.list_zones():
@@ -161,6 +169,10 @@ def main():
         do_arm(clnt, args)
     elif args.command == 'disarm':
         do_disarm(clnt, args)
+    elif args.command == 'police':
+        do_police(clnt, args)
+    elif args.command == 'fire':
+        do_fire(clnt, args)
     elif args.command == 'partitions':
         do_list_partitions(clnt, args)
     elif args.command == 'summary':

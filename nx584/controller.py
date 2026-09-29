@@ -1,7 +1,4 @@
-try:
-    import ConfigParser as configparser
-except ImportError:
-    import configparser
+import configparser
 import datetime
 import logging
 import serial
@@ -390,6 +387,8 @@ class NXController(object):
                 'config', 'idle_time_heartbeat_seconds')
         except configparser.NoOptionError:
             self._idle_time_heartbeat_seconds = 120
+        self.messaging = None
+        self.initial_mqtt_publish_all_completed = False
 
     def connect(self):
         if '/' in self._portspec[0] or 'COM' in self._portspec[0]:
@@ -473,6 +472,12 @@ class NXController(object):
 
     def arm_auto(self, partition):
         self._queue.append([0x3D, 0x05, 0x01, 0x01])
+
+    def police_panic(self, partition):
+        self._queue.append([0x3E, 0x06, 0x01, partition])
+
+    def fire_panic(self, partition):
+        self._queue.append([0x3E, 0x04, 0x01, partition])
 
     def disarm(self, master_pin, partition):
         self._queue.append([0x3C] +
@@ -583,6 +588,15 @@ class NXController(object):
         self.event_queue.push(event)
         for ext in self.extensions:
             ext.obj.zone_status(zone)
+        if self.messaging is not None:
+            state_str = 'true' if zone.state else 'false'
+            self.messaging.publish_zone_state(zone.number, state_str)
+            self.messaging.publish_zone_bypassed(zone.number,
+                                                 str(zone.bypassed).lower())
+            self.messaging.publish_zone_condition_flags(zone.number,
+                                                         zone.condition_flags)
+            self.messaging.publish_zone_type_flags(zone.number,
+                                                    zone.type_flags)
 
     def _send_flag_notifications(self, flags_section, flags_key, asserted,
                                  deasserted, email_fn):
@@ -619,9 +633,21 @@ class NXController(object):
                 partition.number,
                 '' if partition.armed else 'not'))
         LOG.debug('Partition %i %s' % (partition.number,
-                                       partition.condition_flags))
+                                        partition.condition_flags))
         for ext in self.extensions:
             ext.obj.partition_status(partition)
+        if self.messaging is not None:
+            if not self.initial_mqtt_publish_all_completed:
+                self.publish_all()
+                self.initial_mqtt_publish_all_completed = True
+                # Publish online after initial sync completes
+                self.messaging.publish_system_avail('online')
+            else:
+                state_str = self.get_partition_state_string(partition)
+                self.messaging.publish_partition_state(
+                    partition.number, state_str)
+                self.messaging.publish_partition_condition_flags(
+                    partition.number, partition.condition_flags)
 
         deasserted = set(orig_flags) - set(partition.condition_flags)
         asserted = set(partition.condition_flags) - set(orig_flags)
@@ -655,6 +681,20 @@ class NXController(object):
             self._send_flag_notifications(section, 'alarm_flags', asserted,
                                           deasserted, email_alarms)
 
+
+    def get_partition_state_string(self, partition):
+        if partition.alarm:
+            return 'triggered'
+        elif partition.armed and partition.armedHome:
+            return 'armed_home'
+        elif partition.armed:
+            return 'armed_away'
+        else:
+            return 'disarmed'
+
+    def publish_all(self):
+        if self.messaging is not None:
+            self.messaging.publish_all()
 
     def process_msg_8(self, frame):
         errors = model.System.STATUS_FLAGS[1] + model.System.STATUS_FLAGS[2]
