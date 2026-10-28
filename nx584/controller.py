@@ -171,6 +171,12 @@ class NXController(object):
                 'config', 'idle_time_heartbeat_seconds')
         except configparser.NoOptionError:
             self._idle_time_heartbeat_seconds = 120
+        try:
+            self._status_retry_seconds = self._config.getint(
+                'config', 'status_retry_seconds')
+        except configparser.NoOptionError:
+            self._status_retry_seconds = 15
+        self._last_status_request = 0
         self.messaging = None
         self.initial_mqtt_publish_all_completed = False
         self.use_nx587_device = False
@@ -312,6 +318,7 @@ class NXController(object):
         self._adapter.zone_bypass_toggle(zone, **kwargs)
 
     def get_system_status(self):
+        self._last_status_request = time.time()
         self._queue.append([0x28])
 
     def get_partition_status(self, partition):
@@ -652,6 +659,26 @@ class NXController(object):
                 user.authorized_partitions.append(i + 1)
         LOG.info('Received information about user %i' % user.number)
 
+    def _request_missing_status(self):
+        # The startup system status request is sometimes lost (e.g. when the
+        # panel answers the time set at the same time). Until a partition
+        # status arrives, keep asking: the heartbeat alone may never fire
+        # while zones keep reporting activity.
+        if self.partitions:
+            return
+        if time.time() - self._last_status_request < self._status_retry_seconds:
+            return
+        valid = [i for i in range(1, 9)
+                 if ('Valid partition %i' % i) in self.system.status_flags]
+        if valid:
+            LOG.info('No partition status yet, requesting it for %s' % valid)
+            self._last_status_request = time.time()
+            for i in valid:
+                self.get_partition_status(i)
+        else:
+            LOG.info('No system status yet, requesting it again')
+            self.get_system_status()
+
     def process_nx587_frame(self, frame):
         prefix = frame.data.get('prefix')
         if prefix == 'ZN':
@@ -762,6 +789,7 @@ class NXController(object):
         watchdog = time.time()
 
         while self.running:
+            self._request_missing_status()
             frame = self.process_next()
             if frame is None:
                 if time.time() - watchdog < self._idle_time_heartbeat_seconds:
