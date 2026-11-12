@@ -79,6 +79,18 @@ def index_partitions():
         LOG.exception('Failed to index partitions')
 
 
+@app.route('/system')
+def index_system():
+    try:
+        result = json.dumps({
+            'panel_id': CONTROLLER.system.panel_id,
+            'status_flags': CONTROLLER.system.status_flags,
+        })
+        return flask.Response(result, mimetype='application/json')
+    except Exception as e:
+        LOG.exception('Failed to index system')
+
+
 @app.route('/command')
 def command():
     args = flask.request.args
@@ -209,7 +221,7 @@ def get_events():
 @app.route('/version')
 def get_version():
     result = {
-        'version': '1.2',
+        'version': '1.3',
         'last_active': int(_controller.last_active),
     }
     if _controller:
