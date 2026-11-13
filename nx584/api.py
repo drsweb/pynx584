@@ -83,8 +83,8 @@ def index_partitions():
 def index_system():
     try:
         result = json.dumps({
-            'panel_id': CONTROLLER.system.panel_id,
-            'status_flags': CONTROLLER.system.status_flags,
+            'panel_id': _controller.system.panel_id,
+            'status_flags': _controller.system.status_flags,
         })
         return flask.Response(result, mimetype='application/json')
     except Exception as e:
