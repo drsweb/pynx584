@@ -73,15 +73,11 @@ class Client(object):
         while True:
             r = self._session.get(self._url + '/users/%i' % user_number,
                                   params=params,
-<<<<<<< HEAD
-                                  headers={'Master-Pin': master_pin})
+                                  headers={'Master-Pin': master_pin},
+                                  timeout=self._timeout)
             if r.status_code == 501:
                 print('Error: %s' % r.json()['error'])
                 return None
-=======
-                                  headers={'Master-Pin': master_pin},
-                                  timeout=self._timeout)
->>>>>>> fa5b804b9dc002aef67f3efa34543780102abcac
             if r.status_code == 202:
                 params['retry'] = 'yes'
                 time.sleep(1)
