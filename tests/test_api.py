@@ -11,7 +11,7 @@ class TestSystemEndpoint(unittest.TestCase):
         api.app.config['TESTING'] = True
         self.client = api.app.test_client()
 
-    @mock.patch.object(api, 'CONTROLLER')
+    @mock.patch.object(api, '_controller')
     def test_system_endpoint_returns_json(self, mock_controller):
         mock_controller.system = model.System()
         mock_controller.system.panel_id = 42
@@ -24,7 +24,7 @@ class TestSystemEndpoint(unittest.TestCase):
         self.assertEqual(data['panel_id'], 42)
         self.assertEqual(data['status_flags'], ['AC fail', 'Low battery'])
 
-    @mock.patch.object(api, 'CONTROLLER')
+    @mock.patch.object(api, '_controller')
     def test_system_endpoint_empty_flags(self, mock_controller):
         mock_controller.system = model.System()
         mock_controller.system.panel_id = 0
@@ -36,7 +36,7 @@ class TestSystemEndpoint(unittest.TestCase):
         self.assertEqual(data, {'panel_id': 0, 'status_flags': []})
 
     def test_system_endpoint_controller_none(self):
-        api.CONTROLLER = None
+        api._controller = None
 
         with self.assertRaises(TypeError):
             self.client.get('/system')
